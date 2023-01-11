@@ -76,4 +76,6 @@ dependencies {
     implementation "androidx.camera:camera-extensions:$camerax_version"
     implementation "androidx.camera:camera-lifecycle:$camerax_version"
     implementation "androidx.camera:camera-view:$camerax_version"
+    def work_version = '2.7.1'
+    implementation "androidx.work:work-runtime-ktx:$work_version"
 }

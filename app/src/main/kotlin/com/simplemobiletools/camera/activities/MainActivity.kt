@@ -16,6 +16,11 @@ import androidx.constraintlayout.widget.ConstraintSet
 import androidx.core.content.ContextCompat
 import androidx.core.view.*
 import androidx.transition.*
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
@@ -37,6 +42,7 @@ import com.simplemobiletools.camera.interfaces.MyPreview
 import com.simplemobiletools.camera.models.ResolutionOption
 import com.simplemobiletools.camera.models.TimerMode
 import com.simplemobiletools.camera.views.FocusCircleView
+import com.simplemobiletools.camera.worker.GenerateProofWorker
 import com.simplemobiletools.commons.extensions.*
 import com.simplemobiletools.commons.helpers.*
 import com.simplemobiletools.commons.models.Release
@@ -54,7 +60,10 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         const val VIDEO_MODE_INDEX = 0
         private const val MIN_SWIPE_DISTANCE_X = 100
         private const val TIMER_2_SECONDS = 2001
+        private const val KEY_LAST_URI = "lastUri"
     }
+
+
 
     private lateinit var defaultScene: Scene
     private lateinit var flashModeScene: Scene
@@ -68,7 +77,9 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
     private var mIsHardwareShutterHandled = false
     private var mLastHandledOrientation = 0
     private var countDownTimer: CountDownTimer? = null
-
+    private val workManager:WorkManager by lazy {
+        WorkManager.getInstance(this)
+    }
     private val tabSelectedListener = object : TabSelectedListener {
         override fun onTabSelected(tab: TabLayout.Tab) {
             handlePermission(PERMISSION_RECORD_AUDIO) {
@@ -88,6 +99,8 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
             }
         }
     }
+
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         useDynamicTheme = false
@@ -115,6 +128,7 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
                     WindowManager.LayoutParams.FLAG_FULLSCREEN
             )
         }
+        retrieveIntent()
     }
 
     private fun selectPhotoTab(triggerListener: Boolean = false) {
@@ -142,6 +156,8 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         camera_mode_tab.removeOnTabSelectedListener(tabSelectedListener)
     }
 
+
+
     override fun onResume() {
         super.onResume()
         if (hasStorageAndCameraPermissions()) {
@@ -152,8 +168,10 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
             mOrientationEventListener.enable()
         }
 
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         ensureTransparentNavigationBar()
+        retrieveIntent()
     }
 
     private fun ensureTransparentNavigationBar() {
@@ -368,7 +386,7 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
     private fun initButtons() {
         timer_text.setFactory { layoutInflater.inflate(R.layout.timer_text, null) }
         toggle_camera.setOnClickListener { mPreview!!.toggleFrontBackCamera() }
-        last_photo_video_preview.setOnClickListener { showLastMediaPreview() }
+        last_photo_video_preview.setOnClickListener { previewLastMedia() }
         toggle_flash.setOnClickListener { mPreview!!.handleFlashlightClick() }
         toggle_timer.setOnClickListener {
             val transitionSet = createTransition()
@@ -479,6 +497,19 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         }
     }
 
+    private fun previewLastMedia() {
+        if (mPreviewUri != null) {
+            val path = applicationContext.getRealPathFromURI(mPreviewUri!!) ?: mPreviewUri!!.toString()
+            val intent = Intent(this, LastMediaPreviewActivity::class.java).apply {
+                putExtra("last_taken",path)
+
+            }
+
+            startActivity(intent)
+
+        }
+    }
+
     private fun shutterPressed() {
         if (countDownTimer != null) {
             cancelTimer()
@@ -532,6 +563,16 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         mPreviewUri = Uri.withAppendedPath(uri, lastMediaId.toString())
 
         loadLastTakenMedia(mPreviewUri)
+    }
+
+    private fun retrieveIntent() {
+        val retrievedIntent = intent
+        retrievedIntent.data?.let { returnedIntent->
+        val mimeType = contentResolver.getType(returnedIntent)
+        if (mimeType == "application/zip"){
+            //ProofModeUtils.shareFile(returnedIntent.toFile(),this)
+        }
+        }
     }
 
     private fun loadLastTakenMedia(uri: Uri?) {
@@ -651,6 +692,14 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
     override fun onMediaSaved(uri: Uri) {
         change_resolution.isEnabled = true
         loadLastTakenMedia(uri)
+        val proofGenerationBuilder = OneTimeWorkRequestBuilder<GenerateProofWorker>()
+        proofGenerationBuilder.setInputData(ProofModeUtils.createData(ProofModeUtils.MEDIA_KEY,uri))
+        val constraints = Constraints.Builder()
+            .setRequiresStorageNotLow(true)
+            .setRequiresBatteryNotLow(true)
+            .build()
+        proofGenerationBuilder.setConstraints(constraints)
+        workManager.beginUniqueWork(uri.toString(),ExistingWorkPolicy.REPLACE,proofGenerationBuilder.build()).enqueue()
         if (isImageCaptureIntent()) {
             Intent().apply {
                 data = uri
@@ -707,10 +756,8 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
 
     override fun onVideoRecordingStopped() {
         camera_mode_holder.beVisible()
-
         toggle_camera.fadeIn()
         last_photo_video_preview.fadeIn()
-
         video_rec_curr_timer.text = 0.getFormattedDuration()
         video_rec_curr_timer.beGone()
 
